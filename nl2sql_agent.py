@@ -1,7 +1,3 @@
-"""
-自然语言转SQL智能体 - 最终版
-添加示例数据提取工具（简化版 - 只做通用截断）
-"""
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Literal
@@ -499,8 +495,6 @@ class LLMClient:
                 "max_tokens": self.config.max_tokens,
                 "enable_thinking": False
             }
-            print("--------------------payload---------------------------")
-            print(payload)
 
             if tools:
                 payload["tools"] = tools
@@ -512,9 +506,6 @@ class LLMClient:
                     json=payload,
                     headers=headers
                 )
-                print("--------------------response---------------------------")
-                print(response)
-                print(response.json())
                 response.raise_for_status()
                 return response.json()
                 
