@@ -36,7 +36,6 @@ class DatabaseConfig(BaseModel):
     database: str
     
     def get_database_engine(self):
-        # db_type: str, db_host: str, db_port: int, db_account: str, db_password: str, db_name: str):
     
         user = quote_plus(self.username)
         pwd = quote_plus(self.password)
@@ -129,42 +128,23 @@ class DatabaseToolkit:
             raise ConnectionError(f"Failed to connect to database: {str(e)}")
     
     def get_tool_definitions(self, authorized_tables: List[str]) -> List[Dict]:
-        """获取工具定义（标准function格式）"""
+        # 显示授权表列表（如果不多）
+        # auth_tables_str = ', '.join(authorized_tables) if len(authorized_tables) <= 20 else f"{', '.join(authorized_tables[:20])}... (total {len(authorized_tables)} tables)"
+        auth_tables_str = ', '.join(authorized_tables)
+        
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "extract_relevant_tables",
-                    "description": f"Extract table names that are relevant to answering the user's question. Only extract tables from the authorized list. Authorized tables: {', '.join(authorized_tables[:20])}{'...' if len(authorized_tables) > 20 else ''}",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "table_names": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of table names that might be needed to answer the question. Extract 1-5 most relevant tables."
-                            },
-                            "reasoning": {
-                                "type": "string",
-                                "description": "Brief explanation of why these tables were selected"
-                            }
-                        },
-                        "required": ["table_names"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "get_table_schema",
-                    "description": "Get the schema information for specified tables. Returns column names, types, and constraints in a compact format.",
+                    "description": f"Get schema for tables (compact format). First, identify which tables are relevant to the question, then get their schemas. Authorized tables: {auth_tables_str}",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "table_names": {
-                                "type": "array",
+                                "type": "array", 
                                 "items": {"type": "string"},
-                                "description": "List of table names to get schema for (1-5 tables recommended)"
+                                "description": "List of relevant table names (1-5 tables). Only specify tables you believe are needed to answer the question."
                             }
                         },
                         "required": ["table_names"]
@@ -175,24 +155,13 @@ class DatabaseToolkit:
                 "type": "function",
                 "function": {
                     "name": "get_sample_data",
-                    "description": "Get sample data from a table to understand the actual data format and values. Use this to check: date/time formats, enum values (like gender, status), naming conventions, value patterns. IMPORTANT: Always specify column_names to avoid retrieving all columns and reduce token usage.",
+                    "description": "Get sample data in compact text format. Use to check date formats, enum values, naming conventions. MUST specify column_names.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "table_name": {
-                                "type": "string",
-                                "description": "Table name to get sample data from"
-                            },
-                            "column_names": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Specific column names to retrieve. REQUIRED to avoid fetching unnecessary columns. Example: ['gender', 'status'] to check value formats."
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Number of sample rows to retrieve (default: 5, max: 10)",
-                                "default": 5
-                            }
+                            "table_name": {"type": "string"},
+                            "column_names": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. Only specify columns you need to check."},
+                            "limit": {"type": "integer", "default": 5}
                         },
                         "required": ["table_name", "column_names"]
                     }
@@ -202,15 +171,10 @@ class DatabaseToolkit:
                 "type": "function",
                 "function": {
                     "name": "run_sql",
-                    "description": "Execute SQL queries against the configured database. Only SELECT queries are allowed.",
+                    "description": "Execute SELECT query",
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "sql": {
-                                "type": "string",
-                                "description": "SQL query to execute (SELECT only)"
-                            }
-                        },
+                        "properties": {"sql": {"type": "string"}},
                         "required": ["sql"]
                     }
                 }
@@ -219,11 +183,8 @@ class DatabaseToolkit:
                 "type": "function",
                 "function": {
                     "name": "list_tables",
-                    "description": "List all authorized tables in the database.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {}
-                    }
+                    "description": "List authorized tables",
+                    "parameters": {"type": "object", "properties": {}}
                 }
             }
         ]
@@ -244,13 +205,6 @@ class DatabaseToolkit:
                 )
             elif tool_name == "list_tables":
                 return self._list_tables(authorized_tables)
-            elif tool_name == "extract_relevant_tables":
-                # 这个工具不需要实际执行，只是用来让LLM提取表名
-                return {
-                    "success": True,
-                    "extracted_tables": arguments.get("table_names", []),
-                    "reasoning": arguments.get("reasoning", "")
-                }
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
@@ -504,27 +458,14 @@ class DatabaseToolkit:
         else:
             return type_str[:20]  # 限制长度
     
-    def _list_tables(self, authorized_tables: List[str]) -> Dict[str, Any]:
-        """列出授权的表"""
-        try:
-            all_tables = self.inspector.get_table_names()
-            available_tables = [t for t in all_tables if t in authorized_tables]
-            
-            # 如果表太多，分组显示
-            result = {
-                "total_authorized": len(authorized_tables),
-                "total_available": len(available_tables),
-            }
-            
-            if len(available_tables) <= 50:
-                result["tables"] = available_tables
-            else:
-                result["tables_sample"] = available_tables[:50]
-                result["note"] = f"Showing first 50 of {len(available_tables)} tables. Use extract_relevant_tables to identify specific tables needed."
-            
-            return result
-        except Exception as e:
-            return {"error": str(e)}
+    def _list_tables(self, authorized_tables: List[str]) -> Dict:
+        all_tables = self.inspector.get_table_names()
+        available = [t for t in all_tables if t in authorized_tables]
+        return {
+            "total_authorized": len(authorized_tables),
+            "total_available": len(available),
+            "tables": available[:50] if len(available) <= 50 else available[:50] + ["..."]
+        }
     
     def close(self):
         """关闭连接"""
@@ -558,7 +499,9 @@ class LLMClient:
                 "max_tokens": self.config.max_tokens,
                 "enable_thinking": False
             }
-            
+            print("--------------------payload---------------------------")
+            print(payload)
+
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = tool_choice
@@ -569,6 +512,9 @@ class LLMClient:
                     json=payload,
                     headers=headers
                 )
+                print("--------------------response---------------------------")
+                print(response)
+                print(response.json())
                 response.raise_for_status()
                 return response.json()
                 
@@ -587,14 +533,13 @@ class NL2SQLAgent:
 - 专注于总结和解释结果
 
 **你的工具**:
-1. extract_relevant_tables: 从授权表中提取与问题相关的表名（1-5个）
-2. get_table_schema: 获取指定表的结构信息
-3. get_sample_data: 获取示例数据以了解字段的实际格式和值
-4. run_sql: 执行SQL查询（仅支持SELECT）
-5. list_tables: 列出所有授权的表
+1. get_table_schema: 获取指定表的结构信息
+2. get_sample_data: 获取示例数据以了解字段的实际格式和值
+3. run_sql: 执行SQL查询（仅支持SELECT）
+4. list_tables: 列出所有授权的表
 
 **推荐工作流程**:
-1. 如果授权表很多（>10个），先调用 extract_relevant_tables 提取相关表
+1. 分析问题,确定需要哪些表
 2. 调用 get_table_schema 获取这些表的结构
 3. 如果不确定字段的具体格式或值，调用 get_sample_data 查看实际数据
    - 重要：必须指定 column_names 参数，只获取需要了解的字段
@@ -785,10 +730,11 @@ class NL2SQLAgent:
 """
         
         # 只在表不多时直接列出
-        if len(request.authorized_tables) <= 10:
-            user_content += f"- 授权表: {', '.join(request.authorized_tables)}\n"
-        else:
-            user_content += f"- 授权表太多，请使用 extract_relevant_tables 工具提取相关表\n"
+        # if len(request.authorized_tables) <= 10:
+        #     user_content += f"- 授权表: {', '.join(request.authorized_tables)}\n"
+        # else:
+        #     user_content += f"- 授权表太多，请使用 extract_relevant_tables 工具提取相关表\n"
+        user_content += f"- 授权表: {', '.join(request.authorized_tables)}\n"
         
         # 添加参考信息
         if request.reference_info:
