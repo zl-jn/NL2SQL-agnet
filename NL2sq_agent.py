@@ -1,6 +1,6 @@
 """
-自然语言转SQL智能体 - 优化版
-添加智能表名提取和简化表结构格式，避免token爆炸
+自然语言转SQL智能体 - 最终版
+添加示例数据提取工具（简化版 - 只做通用截断）
 """
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -168,6 +168,33 @@ class DatabaseToolkit:
             {
                 "type": "function",
                 "function": {
+                    "name": "get_sample_data",
+                    "description": "Get sample data from a table to understand the actual data format and values. Use this to check: date/time formats, enum values (like gender, status), naming conventions, value patterns. IMPORTANT: Always specify column_names to avoid retrieving all columns and reduce token usage.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "table_name": {
+                                "type": "string",
+                                "description": "Table name to get sample data from"
+                            },
+                            "column_names": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Specific column names to retrieve. REQUIRED to avoid fetching unnecessary columns. Example: ['gender', 'status'] to check value formats."
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Number of sample rows to retrieve (default: 5, max: 10)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["table_name", "column_names"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "run_sql",
                     "description": "Execute SQL queries against the configured database. Only SELECT queries are allowed.",
                     "parameters": {
@@ -186,7 +213,7 @@ class DatabaseToolkit:
                 "type": "function",
                 "function": {
                     "name": "list_tables",
-                    "description": "List all authorized tables in the database. Use this when you need to see all available tables.",
+                    "description": "List all authorized tables in the database.",
                     "parameters": {
                         "type": "object",
                         "properties": {}
@@ -202,6 +229,13 @@ class DatabaseToolkit:
                 return self._run_sql(arguments["sql"])
             elif tool_name == "get_table_schema":
                 return self._get_table_schema(arguments["table_names"], authorized_tables)
+            elif tool_name == "get_sample_data":
+                return self._get_sample_data(
+                    arguments["table_name"],
+                    arguments["column_names"],
+                    arguments.get("limit", 5),
+                    authorized_tables
+                )
             elif tool_name == "list_tables":
                 return self._list_tables(authorized_tables)
             elif tool_name == "extract_relevant_tables":
@@ -251,6 +285,96 @@ class DatabaseToolkit:
                 "error_type": type(e).__name__
             }
     
+    def _get_sample_data(
+        self, 
+        table_name: str, 
+        column_names: List[str], 
+        limit: int,
+        authorized_tables: List[str]
+    ) -> Dict[str, Any]:
+        """获取示例数据 - 简化版（只做通用截断）"""
+        
+        # 权限检查
+        if table_name not in authorized_tables:
+            return {"error": f"Table '{table_name}' not authorized"}
+        
+        # 检查表是否存在
+        if not self.inspector.has_table(table_name):
+            return {"error": f"Table '{table_name}' does not exist"}
+        
+        # 限制条数
+        limit = min(max(1, limit), 10)  # 限制在1-10之间
+        
+        try:
+            # 构建查询
+            columns_str = ", ".join([f'"{col}"' if '"' not in col else col for col in column_names])
+            sql = f"SELECT {columns_str} FROM {table_name} LIMIT {limit}"
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(sql))
+                rows = result.fetchall()
+                
+                if not rows:
+                    return {
+                        "table_name": table_name,
+                        "columns": column_names,
+                        "sample_count": 0,
+                        "samples": [],
+                        "note": "No data found in table"
+                    }
+                
+                # 处理示例数据 - 只做通用截断
+                samples = []
+                for row in rows:
+                    sample_row = {}
+                    for i, col_name in enumerate(column_names):
+                        value = row[i]
+                        # 通用截断处理
+                        truncated_value = self._truncate_value(value)
+                        sample_row[col_name] = truncated_value
+                    samples.append(sample_row)
+                
+                return {
+                    "table_name": table_name,
+                    "columns": column_names,
+                    "sample_count": len(samples),
+                    "samples": samples
+                }
+                
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _truncate_value(self, value: Any, max_length: int = 100) -> Any:
+        """通用值截断 - 简化版"""
+        
+        # NULL值
+        if value is None:
+            return None
+        
+        # 数字和布尔 - 直接返回
+        if isinstance(value, (int, float, bool)):
+            return value
+        
+        # 日期时间 - 转为字符串
+        if hasattr(value, 'strftime'):
+            return str(value)
+        
+        # 二进制数据 - 显示大小
+        if isinstance(value, bytes):
+            return f"<binary: {len(value)} bytes>"
+        
+        # 字符串 - 截断长文本
+        if isinstance(value, str):
+            if len(value) > max_length:
+                return value[:max_length] + f"...[total {len(value)} chars]"
+            return value
+        
+        # 其他类型 - 转字符串后截断
+        str_value = str(value)
+        if len(str_value) > max_length:
+            return str_value[:max_length] + "..."
+        return str_value
+    
     def _get_table_schema(self, table_names: List[str], authorized_tables: List[str]) -> Dict[str, Any]:
         """获取表结构 - 使用简化格式"""
         schemas = {}
@@ -298,12 +422,7 @@ class DatabaseToolkit:
         primary_keys: List[str], 
         foreign_keys: List[Dict]
     ) -> str:
-        """使用简化格式输出表结构，减少token消耗
-        
-        格式示例：
-        Table: students
-        Columns: id(INT,PK), name(VARCHAR), age(INT), class_id(INT,FK->classes.id)
-        """
+        """使用简化格式输出表结构"""
         lines = [f"Table: {table_name}"]
         
         # 构建列信息
@@ -423,7 +542,8 @@ class LLMClient:
                 "model": self.config.model_name,
                 "messages": messages,
                 "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens
+                "max_tokens": self.config.max_tokens,
+                "enable_thinking": False
             }
             
             if tools:
@@ -452,26 +572,34 @@ class NL2SQLAgent:
 **响应准则**:
 - 执行查询后的原始结果会显示给用户，你不需要在响应中包含它
 - 专注于总结和解释结果
-- 任何总结或观察应该是最后一步
 
 **你的工具**:
 1. extract_relevant_tables: 从授权表中提取与问题相关的表名（1-5个）
 2. get_table_schema: 获取指定表的结构信息
-3. run_sql: 执行SQL查询（仅支持SELECT）
-4. list_tables: 列出所有授权的表
+3. get_sample_data: 获取示例数据以了解字段的实际格式和值
+4. run_sql: 执行SQL查询（仅支持SELECT）
+5. list_tables: 列出所有授权的表
 
 **推荐工作流程**:
 1. 如果授权表很多（>10个），先调用 extract_relevant_tables 提取相关表
-2. 然后调用 get_table_schema 获取这些表的结构
-3. 基于表结构生成SQL
-4. 使用 run_sql 执行并测试SQL
-5. 如果失败，分析错误并重新生成
+2. 调用 get_table_schema 获取这些表的结构
+3. 如果不确定字段的具体格式或值，调用 get_sample_data 查看实际数据
+   - 重要：必须指定 column_names 参数，只获取需要了解的字段
+   - 示例数据会帮助你了解：日期格式、枚举值、命名规范等
+4. 基于表结构和示例数据生成SQL
+5. 使用 run_sql 执行并测试SQL
+6. 如果失败，分析错误并重新生成
+
+**何时使用 get_sample_data**:
+- 不确定枚举字段的具体值（如性别、状态字段）
+- 不确定日期时间的格式
+- 不确定命名规范（如班级名称格式）
+- 需要了解实际数据模式
 
 **重要规则**:
 - 只生成SELECT查询语句
 - 只使用授权的表
-- 优先使用 extract_relevant_tables 避免获取太多表结构
-- 一次只获取真正需要的表结构（通常1-3个表足够）
+- 调用 get_sample_data 时必须指定 column_names
 - SQL必须符合目标数据库的语法
 """
     
@@ -492,9 +620,7 @@ class NL2SQLAgent:
             
             # 构建初始消息
             messages = self._build_initial_messages(request)
-            
-            # 主循环：与LLM交互直到生成成功的SQL
-            max_iterations = request.max_retries * 4  # 增加迭代次数以支持多步工具调用
+            max_iterations = request.max_retries * 5
             final_sql = None
             
             for iteration in range(max_iterations):
@@ -549,7 +675,7 @@ class NL2SQLAgent:
                                 "iteration": attempts,
                                 "action": "tool_result",
                                 "tool_name": tool_name,
-                                "result": self._truncate_result(tool_result)
+                                "result": tool_result
                             })
                             
                             # 检查是否是成功的SQL执行
@@ -655,12 +781,12 @@ class NL2SQLAgent:
         if request.reference_info:
             if request.reference_info.table_ddl:
                 user_content += "\n**表结构 (DDL)**:\n"
-                for ddl in request.reference_info.table_ddl[:5]:  # 限制数量
+                for ddl in request.reference_info.table_ddl[:5]:
                     user_content += f"{ddl}\n"
             
             if request.reference_info.question_sql_pairs:
                 user_content += "\n**示例问题-SQL对**:\n"
-                for pair in request.reference_info.question_sql_pairs[:3]:  # 限制数量
+                for pair in request.reference_info.question_sql_pairs[:3]:
                     user_content += f"Q: {pair.get('question', '')}\n"
                     user_content += f"SQL: {pair.get('sql', '')}\n\n"
             
@@ -670,7 +796,7 @@ class NL2SQLAgent:
         # 添加对话历史
         if request.conversation_history:
             user_content += "\n**对话历史**:\n"
-            for conv in request.conversation_history[-2:]:  # 只保留最近2条
+            for conv in request.conversation_history[-2:]:
                 user_content += f"Q: {conv.question}\n"
                 if conv.sql:
                     user_content += f"SQL: {conv.sql}\n"
@@ -678,7 +804,7 @@ class NL2SQLAgent:
                     user_content += f"总结: {conv.summary}\n"
                 user_content += "\n"
         
-        user_content += "\n请开始处理这个问题。如果授权表很多，建议先使用 extract_relevant_tables 提取相关表。"
+        user_content += "\n请开始处理这个问题。如果需要了解字段的具体格式，可以使用 get_sample_data 工具（记得指定 column_names）。"
         
         messages.append({"role": "user", "content": user_content})
         
@@ -686,7 +812,6 @@ class NL2SQLAgent:
     
     def _extract_sql_from_text(self, text: str) -> Optional[str]:
         """从文本中提取SQL语句"""
-        # 尝试从代码块提取
         sql_match = re.search(r'```sql\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
         if sql_match:
             return sql_match.group(1).strip()
@@ -697,25 +822,13 @@ class NL2SQLAgent:
             return select_match.group(1).strip()
         
         return None
-    
-    def _truncate_result(self, result: Any, max_length: int = 500) -> Any:
-        """截断结果以避免日志过大"""
-        if isinstance(result, dict):
-            truncated = {}
-            for key, value in result.items():
-                if isinstance(value, str) and len(value) > max_length:
-                    truncated[key] = value[:max_length] + "..."
-                else:
-                    truncated[key] = value
-            return truncated
-        return result
 
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="NL2SQL Agent API (Optimized)",
-    description="自然语言转SQL智能体服务 - 优化版：智能表名提取和简化表结构",
-    version="2.1.0"
+    title="NL2SQL Agent API (Final)",
+    description="自然语言转SQL智能体服务 - 最终版：简化的示例数据提取",
+    version="2.3.0"
 )
 
 agent = NL2SQLAgent()
@@ -723,11 +836,7 @@ agent = NL2SQLAgent()
 
 @app.post("/nl2sql", response_model=NL2SQLResponse)
 async def generate_sql(request: NL2SQLRequest):
-    """
-    自然语言转SQL接口
-    
-    接收自然语言问题和配置信息，返回生成的SQL语句
-    """
+    """自然语言转SQL接口"""
     try:
         response = await agent.process(request)
         return response
@@ -738,20 +847,21 @@ async def generate_sql(request: NL2SQLRequest):
 @app.get("/health")
 async def health_check():
     """健康检查接口"""
-    return {"status": "healthy", "version": "2.1.0"}
+    return {"status": "healthy", "version": "2.3.0"}
 
 
 @app.get("/")
 async def root():
     """根路径"""
     return {
-        "message": "NL2SQL Agent API (Optimized)",
-        "version": "2.1.0",
-        "optimizations": [
-            "Smart table name extraction to avoid token explosion",
-            "Compact schema format (50-70% token reduction)",
-            "Intelligent table filtering before schema retrieval",
-            "Improved multi-step tool calling workflow"
+        "message": "NL2SQL Agent API (Final)",
+        "version": "2.3.0",
+        "features": [
+            "Smart table name extraction",
+            "Compact schema format",
+            "Sample data extraction (simplified - only generic truncation)",
+            "No specific pattern recognition in code",
+            "LLM understands data format from raw samples"
         ],
         "endpoints": {
             "generate_sql": "/nl2sql (POST)",
