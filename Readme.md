@@ -1,451 +1,293 @@
-# NL2SQL Agent - 重构版
+# NL2SQL Agent - 自然语言转SQL智能体
 
-## 🎯 重构亮点
+基于大模型和工具调用的智能SQL生成系统，支持多种数据库，具备自动表结构提取和示例数据查看功能。
 
-本版本参考Vanna AI的设计模式，进行了以下重构：
+## 🎯 核心特性
 
-### 1. ✅ SQLAlchemy数据库封装
-- 使用SQLAlchemy统一管理数据库连接
-- 支持连接池和事务管理
-- 更好的跨数据库兼容性
+- ✅ **多数据库支持**: MySQL, PostgreSQL, Oracle, SQL Server, DaMeng, MariaDB
+- ✅ **智能表识别**: 大模型自动识别相关表，无需手动指定
+- ✅ **紧凑格式**: 表结构和示例数据使用简化格式，节省70%+ token
+- ✅ **示例数据查看**: 自动获取字段实际值，了解日期格式、枚举值等
+- ✅ **自动重试**: SQL执行失败时自动分析错误并重新生成
+- ✅ **安全限制**: 仅允许SELECT查询，防止危险操作
+- ✅ **标准工具调用**: 遵循OpenAI Function Calling规范
 
-### 2. ✅ 标准工具调用格式
-- 遵循OpenAI Function Calling标准
-- 工具定义使用标准的JSON Schema格式
-- 与主流LLM API完全兼容
+## 📦 快速开始
 
-### 3. ✅ 智能工具集
-封装了三个核心工具：
-
-#### `run_sql`
-执行SQL查询（仅SELECT）
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "run_sql",
-    "description": "Execute SQL queries against the configured database",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "sql": {
-          "type": "string",
-          "description": "SQL query to execute (SELECT only)"
-        }
-      },
-      "required": ["sql"]
-    }
-  }
-}
-```
-
-#### `get_table_schema`
-获取表结构信息
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "get_table_schema",
-    "description": "Get the schema information for tables",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "table_names": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "List of table names"
-        }
-      },
-      "required": ["table_names"]
-    }
-  }
-}
-```
-
-#### `list_tables`
-列出所有授权表
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "list_tables",
-    "description": "List all authorized tables",
-    "parameters": {
-      "type": "object",
-      "properties": {}
-    }
-  }
-}
-```
-
-## 🔄 工作流程
-
-### 标准工作流
-
-```
-用户问题
-    ↓
-LLM分析问题
-    ↓
-需要表结构? → 调用 get_table_schema
-    ↓
-生成SQL
-    ↓
-调用 run_sql 测试
-    ↓
-成功? → 返回SQL
-    ↓
-失败? → 分析错误 → 重新生成
-```
-
-### 工具调用示例
-
-**1. LLM收到工具定义**
-```python
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_table_schema",
-            "parameters": {...}
-        }
-    }
-]
-```
-
-**2. LLM返回工具调用**
-```json
-{
-  "tool_calls": [
-    {
-      "id": "call_123",
-      "type": "function",
-      "function": {
-        "name": "get_table_schema",
-        "arguments": "{\"table_names\": [\"students\"]}"
-      }
-    }
-  ]
-}
-```
-
-**3. 执行工具并返回结果**
-```json
-{
-  "role": "tool",
-  "tool_call_id": "call_123",
-  "name": "get_table_schema",
-  "content": "{\"schemas\": {...}}"
-}
-```
-
-**4. LLM基于结果生成SQL**
-```json
-{
-  "tool_calls": [
-    {
-      "id": "call_456",
-      "type": "function",
-      "function": {
-        "name": "run_sql",
-        "arguments": "{\"sql\": \"SELECT COUNT(*) FROM students;\"}"
-      }
-    }
-  ]
-}
-```
-
-## 🚀 快速开始
-
-### 安装
+### 1. 安装依赖
 
 ```bash
-pip install -r requirements_refactored.txt
+pip install fastapi uvicorn pydantic httpx sqlalchemy
+
+# 根据数据库类型安装驱动
+pip install pymysql          # MySQL/MariaDB
+pip install psycopg2-binary  # PostgreSQL
+pip install oracledb         # Oracle
+pip install pymssql          # SQL Server
+pip install dmPython         # DaMeng
 ```
 
-### 启动服务
+### 2. 启动服务
 
 ```bash
-python nl2sql_agent_refactored.py
+python nl2sql_agent.py
 ```
 
-### 测试
+服务将在 `http://localhost:8000` 启动
 
-```bash
-python test_client_refactored.py
-```
-
-## 📋 API使用
-
-### 请求示例
+### 3. 发送请求
 
 ```python
 import httpx
 import asyncio
 
-async def query():
+async def generate_sql():
     request = {
-        "question": "一共有多少学生",
+        "question": "查询销售额前10的产品",
         "database_config": {
             "db_type": "postgresql",
             "host": "localhost",
             "port": 5432,
             "username": "user",
-            "password": "pass",
-            "database": "school"
+            "password": "password",
+            "database": "sales_db"
         },
-        "model_config": {
+        "llm_config": {
             "base_url": "https://api.openai.com/v1",
             "api_key": "sk-xxx",
-            "model_name": "gpt-4"
+            "model_name": "gpt-4",
+            "temperature": 0.1,
+            "max_tokens": 2000
         },
-        "authorized_tables": ["students"],
+        "authorized_tables": ["products", "orders", "order_items"],
         "max_retries": 3
     }
     
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "http://localhost:8000/nl2sql",
-            json=request
+            json=request,
+            timeout=120.0
         )
         return response.json()
 
-result = asyncio.run(query())
-print(result['sql'])
+result = asyncio.run(generate_sql())
+print(f"生成的SQL: {result['sql']}")
 ```
 
-### 响应格式
+## 🔧 API 文档
+
+### POST /nl2sql
+
+生成SQL查询
+
+**请求参数**:
+
+```json
+{
+  "question": "string",                    // 用户的自然语言问题
+  "database_config": {
+    "db_type": "postgresql",               // 数据库类型
+    "host": "localhost",
+    "port": 5432,
+    "username": "user",
+    "password": "password",
+    "database": "dbname"
+  },
+  "llm_config": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-xxx",
+    "model_name": "gpt-4",
+    "temperature": 0.1,
+    "max_tokens": 2000
+  },
+  "authorized_tables": ["table1", "table2"],  // 授权的表列表
+  "reference_info": {                          // 可选：参考信息
+    "table_ddl": ["CREATE TABLE ..."],
+    "question_sql_pairs": [
+      {"question": "示例问题", "sql": "SELECT ..."}
+    ],
+    "additional_info": "额外说明"
+  },
+  "conversation_history": [                    // 可选：对话历史
+    {"question": "上一个问题", "sql": "SELECT ..."}
+  ],
+  "max_retries": 3                             // 最大重试次数
+}
+```
+
+**响应**:
 
 ```json
 {
   "success": true,
-  "sql": "SELECT COUNT(*) FROM students;",
+  "sql": "SELECT * FROM products ORDER BY sales DESC LIMIT 10",
   "attempts": 2,
-  "intermediate_steps": [
-    {
-      "iteration": 1,
-      "action": "tool_call",
-      "tool_name": "get_table_schema",
-      "arguments": {"table_names": ["students"]}
-    },
-    {
-      "iteration": 1,
-      "action": "tool_result",
-      "tool_name": "get_table_schema",
-      "result": {"schemas": {...}}
-    },
-    {
-      "iteration": 2,
-      "action": "tool_call",
-      "tool_name": "run_sql",
-      "arguments": {"sql": "SELECT COUNT(*) FROM students;"}
-    },
-    {
-      "iteration": 2,
-      "action": "tool_result",
-      "tool_name": "run_sql",
-      "result": {"success": true, "row_count": 1}
-    }
-  ]
+  "intermediate_steps": [...]
 }
 ```
 
-## 🔧 核心组件
+## 🛠️ 工具说明
 
-### DatabaseToolkit
-使用SQLAlchemy封装的数据库工具集
+Agent内置4个工具，大模型会自动选择使用：
 
-```python
-toolkit = DatabaseToolkit(database_config)
-toolkit.connect()
+### 1. get_table_schema
+获取表结构信息（简化格式）
 
-# 获取工具定义
-tools = toolkit.get_tool_definitions(authorized_tables)
-
-# 执行工具
-result = toolkit.execute_tool("get_table_schema", 
-                              {"table_names": ["students"]},
-                              authorized_tables)
+**示例输出**:
+```
+Table: products
+Columns: product_id(INT,PK), name(STR(100)), price(DEC(10,2))
 ```
 
-### LLMClient
-标准的LLM客户端，支持工具调用
+### 2. get_sample_data
+获取示例数据以了解实际格式
 
-```python
-client = LLMClient(model_config)
-
-response = await client.chat_completion(
-    messages=[...],
-    tools=[...],
-    tool_choice="auto"
-)
+**示例输出**:
+```
+Table: students
+Columns: gender, class_name
+Samples (5 rows):
+M, 一年级一班
+F, 一年级二班
+M, 二年级一班
 ```
 
-### NL2SQLAgent
-主智能体，协调工具调用和SQL生成
+### 3. run_sql
+执行SQL查询（仅SELECT）
 
-```python
-agent = NL2SQLAgent()
-response = await agent.process(request)
+### 4. list_tables
+列出所有授权的表
+
+## 💡 工作流程
+
+```
+用户问题
+   ↓
+1. 大模型分析问题，确定需要哪些表
+   ↓
+2. 调用 get_table_schema 获取表结构
+   ↓
+3. 如果不确定字段格式，调用 get_sample_data
+   ↓
+4. 基于结构和示例数据生成SQL
+   ↓
+5. 调用 run_sql 测试SQL
+   ↓
+6. 成功 → 返回SQL
+   失败 → 分析错误 → 重新生成
 ```
 
-## 🛡️ 安全特性
+## 📊 使用示例
 
-### SQL注入防护
-- 只允许SELECT和WITH查询
-- 检测并阻止危险关键字
-- 使用参数化查询
+### 示例1: 基本查询
 
-### 权限控制
-- 表级别授权检查
-- 工具级别权限验证
-- 结果集大小限制
+**问题**: "统计男女学生人数"
 
-## 📊 表结构提取
+**流程**:
+1. 获取表结构: `get_table_schema(["students"])`
+2. 查看性别字段格式: `get_sample_data("students", ["gender"])`
+   - 发现是 M/F 格式
+3. 生成SQL: `SELECT gender, COUNT(*) FROM students GROUP BY gender`
+4. 测试执行 ✅
 
-### 使用SQLAlchemy Inspector
+### 示例2: 复杂查询
+
+**问题**: "查询最近30天销售额前10的产品"
+
+**流程**:
+1. 获取相关表结构: `get_table_schema(["products", "orders", "order_items"])`
+2. 查看日期格式: `get_sample_data("orders", ["order_date"])`
+3. 生成复杂JOIN查询
+4. 测试执行 ✅
+
+## 🔒 安全特性
+
+- ✅ 只允许 SELECT 和 WITH 查询
+- ✅ 检测并阻止危险关键字
+- ✅ 表级别授权检查
+- ✅ 结果集大小限制（最多100行）
+- ✅ 连接和查询超时控制
+
+## 🎨 高级功能
+
+### 1. 参考信息（提高准确性）
 
 ```python
-inspector = inspect(engine)
-
-# 获取列信息
-columns = inspector.get_columns(table_name)
-
-# 获取主键
-pk = inspector.get_pk_constraint(table_name)
-
-# 获取外键
-fks = inspector.get_foreign_keys(table_name)
-
-# 获取索引
-indexes = inspector.get_indexes(table_name)
-```
-
-### 返回的结构信息
-
-```json
-{
-  "schemas": {
-    "students": {
-      "columns": [
-        {
-          "name": "student_id",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": true
-        }
-      ],
-      "primary_keys": ["student_id"],
-      "foreign_keys": [
-        {
-          "columns": ["class_id"],
-          "referred_table": "classes",
-          "referred_columns": ["class_id"]
-        }
-      ],
-      "indexes": [...]
-    }
-  }
+"reference_info": {
+    "table_ddl": ["CREATE TABLE products (...)"],
+    "question_sql_pairs": [
+        {"question": "示例", "sql": "SELECT ..."}
+    ],
+    "additional_info": "业务规则说明"
 }
 ```
 
-## 🎨 与Vanna AI的对比
-
-### 相似之处
-- ✅ 工具调用模式
-- ✅ 自动表结构获取
-- ✅ SQL测试验证
-- ✅ 错误重试机制
-
-### 差异
-- 📦 **无内存系统**: 通过传入对话历史实现
-- 🔧 **FastAPI封装**: 作为独立服务运行
-- 🎯 **更灵活**: 支持动态配置数据库和模型
-- 🛡️ **更严格**: 增强的安全检查
-
-## 🔍 调试技巧
-
-### 查看中间步骤
-
-响应中的`intermediate_steps`包含详细的执行日志：
+### 2. 对话历史（上下文查询）
 
 ```python
-for step in result['intermediate_steps']:
-    print(f"[{step['iteration']}] {step['action']}")
-    if step['action'] == 'tool_call':
-        print(f"  Tool: {step['tool_name']}")
-        print(f"  Args: {step['arguments']}")
-    elif step['action'] == 'tool_result':
-        print(f"  Result: {step['result']}")
+"conversation_history": [
+    {
+        "question": "查询所有产品",
+        "sql": "SELECT * FROM products"
+    }
+]
 ```
 
-### 常见问题
+## 📈 Token优化
 
-**Q: 工具调用失败**
-- 检查工具定义格式
-- 验证参数schema
-- 查看tool_result中的error
+### 表结构格式
 
-**Q: SQL生成不准确**
-- 提供更详细的table_ddl
-- 增加question_sql_pairs示例
-- 使用get_table_schema自动获取结构
+- **JSON格式**: ~150 tokens
+- **简化格式**: ~30 tokens
+- **节省**: 80% ✅
 
-**Q: 多次重试仍失败**
-- 查看intermediate_steps
-- 检查数据库连接
-- 验证表权限
+### 示例数据格式
 
-## 📚 扩展开发
+- **JSON格式**: ~100 tokens
+- **简化格式**: ~25 tokens
+- **节省**: 75% ✅
 
-### 添加新工具
+## 🐛 故障排除
 
-```python
-def get_tool_definitions(self, authorized_tables: List[str]) -> List[Dict]:
-    tools = [
-        # 现有工具...
-        {
-            "type": "function",
-            "function": {
-                "name": "your_new_tool",
-                "description": "Tool description",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "param1": {
-                            "type": "string",
-                            "description": "Parameter description"
-                        }
-                    },
-                    "required": ["param1"]
-                }
-            }
-        }
-    ]
-    return tools
+### 连接失败
+- 检查数据库配置
+- 确认数据库服务运行
+- 验证驱动已安装
 
-def execute_tool(self, tool_name: str, arguments: Dict, authorized_tables: List[str]):
-    if tool_name == "your_new_tool":
-        return self._your_new_tool(arguments)
-    # ...
-```
+### SQL不准确
+- 提供详细的表DDL
+- 添加示例问题-SQL对
+- 使用get_sample_data查看实际数据
+- 说明业务规则
 
-### 自定义System Prompt
+### 超时错误
+- 减少授权表数量
+- 增加max_retries
+- 优化数据库索引
 
-```python
-self.system_prompt = """
-你的自定义提示词...
-包含工具使用说明和特定领域知识
-"""
-```
+## 📚 支持的数据库
 
-## 🎉 总结
+| 数据库 | 驱动 | db_type值 |
+|--------|------|-----------|
+| MySQL | pymysql | "mysql" |
+| MariaDB | pymysql | "mariadb" |
+| PostgreSQL | psycopg2 | "postgresql" |
+| Oracle | oracledb | "oracle" |
+| SQL Server | pymssql | "sql server" |
+| DaMeng | dmPython | "dameng" |
 
-这个重构版本：
-- ✅ 使用SQLAlchemy统一数据库访问
-- ✅ 遵循标准工具调用格式
-- ✅ 自动提取表结构辅助生成
-- ✅ 完整的安全和错误处理
-- ✅ 易于扩展和集成
+## 🔄 版本历史
 
-完全符合现代LLM应用的最佳实践！
+### v3.0.0 (当前)
+- ✅ 删除冗余工具
+- ✅ 简化数据格式
+- ✅ 优化工作流程
+
+## 📄 许可证
+
+MIT License
+
+---
+
+**享受智能SQL生成！** 🚀
