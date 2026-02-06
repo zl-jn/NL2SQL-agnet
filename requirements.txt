@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+sqlalchemy
+
+# 数据库驱动（根据需要安装）
+pymysql
+psycopg2-binary
+
+# 可选数据库驱动
+# cx_Oracle==8.3.0  # Oracle
+# pyodbc==5.0.1  # SQL Server
+# dmPython==2.3.0  # 达梦数据库
